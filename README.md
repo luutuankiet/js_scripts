@@ -16,8 +16,9 @@ then open the install link. The manager picks up new versions from the same link
 
 ### gdocs-find-helpers in action
 
-Double-click a word: every match gets a tick beside the scrollbar, and Docs'
-find bar opens and closes out of sight.
+Double-click a word: every match gets a tick beside the scrollbar and Docs' green
+highlight, for as long as the word stays selected. The scan never scrolls the page
+you are reading.
 
 ![Double-click marks every match](https://raw.githubusercontent.com/luutuankiet/js_scripts/assets/gdocs-find-helpers/v0.4/02-double-click-ticks.png)
 

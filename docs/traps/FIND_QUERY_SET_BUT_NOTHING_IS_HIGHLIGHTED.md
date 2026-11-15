@@ -18,7 +18,8 @@ value, but nothing listens. With the bar open the same native setter plus
 Firefox 145, November 2026 (`probes/probe-4-find-set.js`,
 `probes/probe-4c-find-closed.js`).
 
-**Fix.** Open the bar first: dispatch a synthetic Ctrl+F `keydown` on the
+**Fix.** Open the bar first: dispatch a synthetic Ctrl+F `keydown` (Cmd+F on
+macOS, where Docs ignores Ctrl+F) on the
 contenteditable inside `iframe.docs-texteventtarget-iframe`, wait until the card's
 computed `visibility` is `visible`, then set the value. To do this without a
 visible bar, hide the card with `opacity: 0` and an off-screen transform; the

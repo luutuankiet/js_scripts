@@ -1,6 +1,6 @@
 ---
 title: Google Docs DOM facts, selectors, colours and timings
-summary: the selectors, find-highlight colours and timings gdocs-find-helpers depends on, each measured in Firefox 145 on Linux, November 2026
+summary: the selectors, find-highlight colours and timings gdocs-find-helpers depends on, each measured in Firefox 145 on Linux (macOS where marked), November 2026
 verified: 2026-11-15
 ---
 
@@ -9,7 +9,8 @@ verified: 2026-11-15
 Every value here is measured, not documented by Google, and will drift. All were
 measured in Firefox 145.0 on Linux x86_64, `devicePixelRatio` 1, viewport
 2304x1072, in November 2026, with the probes in
-`userscripts/gdocs-find-helpers/probes/`.
+`userscripts/gdocs-find-helpers/probes/`. Rows marked macOS were measured in
+Firefox on macOS in the same month.
 
 ## Selectors
 
@@ -19,7 +20,7 @@ measured in Firefox 145.0 on Linux x86_64, `devicePixelRatio` 1, viewport
 | text canvas tiles | `canvas.kix-canvas-tile-content` (skip tiles with zero size or `offsetHeight`) | Nov 2026 |
 | page backgrounds | `.kix-page-paginated` | Nov 2026 |
 | page-number label shown while scrolling | `.kix-scrollbarwidget` | Nov 2026 |
-| selection mirror | `iframe.docs-texteventtarget-iframe` then `[contenteditable]`, read `textContent` | Nov 2026 |
+| selection mirror | `iframe.docs-texteventtarget-iframe` then `[contenteditable]`, read `textContent`; on macOS empty until a copy event | Nov 2026 |
 | find card | `.appsDocsUiWizFindbarCard`, open when computed `visibility` is `visible` | Nov 2026 |
 | find input | `input[aria-label="Find in document"]` | Nov 2026 |
 | find counter | `.appsDocsUiWizFindbarFindInputCounter`, text like `6 of 271`, counts all document tabs | Nov 2026 |
@@ -54,6 +55,9 @@ measured in Firefox 145.0 on Linux x86_64, `devicePixelRatio` 1, viewport
 | hidden open, fill to counter, close | about 55 ms, 70 to 120 ms, 25 to 90 ms | Nov 2026 |
 | repaint after scroll | 2 animation frames | Nov 2026 |
 | single click empties the mirror | about 1 ms after mouseup; iframe `selectionchange` about 6 ms | Nov 2026 |
+| find counter updates before the green is painted (fresh query) | reading at once missed every match above the current one | Nov 2026 |
+| hidden second editor (iframe of the same doc) to ready | about 2 s; about 3.5 s of main-thread stalls in bursts, worst 612 ms | Nov 2026 |
+| hidden second editor memory | about +120 MB at peak, settles to about +12 MB | Nov 2026 |
 
 ## Events
 
@@ -64,3 +68,6 @@ measured in Firefox 145.0 on Linux x86_64, `devicePixelRatio` 1, viewport
 | trusted `dblclick` reaches `window`, `document` and `.kix-appview-editor` with `clientX/clientY`; inside the iframe only `selectionchange` fires | Nov 2026 |
 | `execCommand('copy')` works only inside a user gesture, and overwrites the clipboard | Nov 2026 |
 | reopening the bar restores the last query; Docs never prefills it with the selection | Nov 2026 |
+| macOS: Docs opens its bar on Cmd+F only; a synthetic Ctrl+F does nothing | Nov 2026 |
+| a synthetic `ClipboardEvent('copy')` with a new `DataTransfer` on the contenteditable: Docs writes the selection into its `clipboardData` and fills the mirror; the system clipboard is untouched (Linux and macOS) | Nov 2026 |
+| two editor sessions of one doc in one tab do not share the find query | Nov 2026 |

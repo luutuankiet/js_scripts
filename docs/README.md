@@ -15,7 +15,7 @@ something is implemented.
 
 | page | covers | verified |
 |---|---|---|
-| [gdocs-find-helpers, the Google Docs find userscript](architecture/gdocs-find-helpers.md) | how the scrollbar ticks are found, how the double-click highlight and Cmd/Ctrl+F prefill drive Docs' find bar, where the selected text is read from | 2026-11-15 |
+| [gdocs-find-helpers, the Google Docs find userscript](architecture/gdocs-find-helpers.md) | how the scrollbar ticks are found, the hidden second editor that reads the whole tab, how the double-click highlight and Cmd/Ctrl+F prefill drive Docs' find bar, where the selected text is read from on Linux and macOS | 2026-11-15 |
 
 ## Traps
 
@@ -38,7 +38,7 @@ Simply true, and expensive to re-derive.
 
 | page | summary | verified |
 |---|---|---|
-| [Google Docs DOM facts, selectors, colours and timings](reference/gdocs-dom-facts.md) | the selectors, find-highlight colours and timings gdocs-find-helpers depends on, each measured in Firefox 145 on Linux, November 2026 | 2026-11-15 |
+| [Google Docs DOM facts, selectors, colours and timings](reference/gdocs-dom-facts.md) | the selectors, find-highlight colours and timings gdocs-find-helpers depends on, each measured in Firefox 145 on Linux (macOS where marked), November 2026 | 2026-11-15 |
 
 ## Decisions
 
@@ -47,5 +47,7 @@ it with a new one rather than editing it.
 
 - [A repo instead of a gist](adr/0001-a-repo-instead-of-a-gist.md)
 - [Use Docs' own find highlighting for double-click](adr/0002-use-docs-own-find-highlighting.md)
+- [Scan a hidden second editor, never the visible one](adr/0003-scan-a-hidden-second-editor.md)
+- [Keep the hidden find bar open after a double-click](adr/0004-keep-the-hidden-find-bar-open.md)
 
 <!-- END GENERATED INDEX -->

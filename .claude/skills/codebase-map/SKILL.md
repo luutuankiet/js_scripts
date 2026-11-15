@@ -21,7 +21,7 @@ something is implemented.
 
 | page | covers | verified |
 |---|---|---|
-| [gdocs-find-helpers, the Google Docs find userscript](../../../docs/architecture/gdocs-find-helpers.md) | how the scrollbar ticks are found, how the double-click highlight and Cmd/Ctrl+F prefill drive Docs' find bar, where the selected text is read from | 2026-11-15 |
+| [gdocs-find-helpers, the Google Docs find userscript](../../../docs/architecture/gdocs-find-helpers.md) | how the scrollbar ticks are found, the hidden second editor that reads the whole tab, how the double-click highlight and Cmd/Ctrl+F prefill drive Docs' find bar, where the selected text is read from on Linux and macOS | 2026-11-15 |
 
 <!-- END GENERATED INDEX -->
 

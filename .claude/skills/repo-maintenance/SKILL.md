@@ -36,7 +36,7 @@ Simply true, and expensive to re-derive.
 
 | page | summary | verified |
 |---|---|---|
-| [Google Docs DOM facts, selectors, colours and timings](../../../docs/reference/gdocs-dom-facts.md) | the selectors, find-highlight colours and timings gdocs-find-helpers depends on, each measured in Firefox 145 on Linux, November 2026 | 2026-11-15 |
+| [Google Docs DOM facts, selectors, colours and timings](../../../docs/reference/gdocs-dom-facts.md) | the selectors, find-highlight colours and timings gdocs-find-helpers depends on, each measured in Firefox 145 on Linux (macOS where marked), November 2026 | 2026-11-15 |
 
 ## Decisions
 
@@ -45,6 +45,8 @@ it with a new one rather than editing it.
 
 - [A repo instead of a gist](../../../docs/adr/0001-a-repo-instead-of-a-gist.md)
 - [Use Docs' own find highlighting for double-click](../../../docs/adr/0002-use-docs-own-find-highlighting.md)
+- [Scan a hidden second editor, never the visible one](../../../docs/adr/0003-scan-a-hidden-second-editor.md)
+- [Keep the hidden find bar open after a double-click](../../../docs/adr/0004-keep-the-hidden-find-bar-open.md)
 
 <!-- END GENERATED INDEX -->
 

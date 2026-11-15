@@ -39,6 +39,7 @@ filled-in copies.
 | `probe-4-copy.js`, `probe-4b-copy-in-dblclick.js` | programmatic copy outside and inside a user gesture |
 | `probe-5-listeners.js` | which targets receive the trusted `dblclick` (installs logging listeners) |
 | `probe-6-arialive.js` | the screen-reader live regions |
+| `probe-7-mac-selection.js` | macOS: the mirror stays empty after a selection until a copy event; a synthetic copy fills it; which of Ctrl+F and Cmd+F opens the bar |
 
 ## Hidden find bar prototype (`proto/`)
 
