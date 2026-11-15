@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Google Docs – find helpers
 // @namespace    luutuankiet.gdocs
-// @version      0.4
+// @version      0.5
 // @author       kietluu.it@gmail.com
 // @description  Double-click a word to mark every match on the scrollbar; Cmd/Ctrl+F fills the find box with your selection; ticks per find match next to the scrollbar.
 // @match        https://docs.google.com/document/*
@@ -14,6 +14,7 @@
 
 (() => {
   'use strict';
+  if (window.top !== window) return;   // Violentmonkey also runs us inside the shadow editor below
   if (window.__gdocsFindHelpers) return;
 
   // Colours Docs paints on the canvas for find matches (measured in Firefox, Nov 2026).
@@ -22,6 +23,7 @@
   const TOL = 7;              // per-channel tolerance
   const SX = 3, SY = 2;       // read one pixel per 3x2 CSS px: plenty to spot a highlight, and fast
   const MIN_PX = 2;           // sampled pixels in a row to count as a highlight row
+  const MAX_MISS = 1;         // sample rows below MIN_PX tolerated inside one highlight
   const POLL_MS = 100;
   const SETTLE_MS = 200;      // wait this long after the query stops changing before sweeping
   const SWEEP_MAX_MS = 20000; // safety limit only; the double-click flow always sweeps the whole tab
@@ -30,16 +32,15 @@
   const DBL_WAIT_MS = 300;    // wait for a possible third click before starting
   const PREFILL_MIN_MS = 180; // Docs restores the last query about 65 ms after Ctrl+F; fill after that
   const MAX_SEL = 100;        // longest selection we search for
-  const OPEN_TIMEOUT_MS = 2000;
+  const OPEN_TIMEOUT_MS = 4000;  // the first open after a page load builds the bar: 1.7 s measured
   const PAINT_FRAMES = 6;      // frames to wait for the green when the first look finds none
 
-  // Docs only paints the canvas near the viewport. So after the query settles we
-  // "sweep": scroll through the tab once behind a frozen picture of the page,
-  // read the highlights at each stop, then put the scroll position back.
-  // One stop costs two animation frames plus a few ms of reading.
+  // Docs only paints the canvas near the viewport, so every match in the tab is read
+  // from a hidden second editor (see "the shadow editor"); the visible one never scrolls.
 
   // mode: '' (no ticks), 'user' (a find you opened yourself), 'dbl' (from a double-click)
-  const state = { mode: '', rows: [], sweeps: 0, lastSweepMs: 0, lastSteps: 0, flow: null, lastFlow: null };
+  // kept: the hidden find bar left open after a double-click, so Docs' green stays painted.
+  const state = { mode: '', rows: [], sweeps: 0, lastSweepMs: 0, lastSteps: 0, flow: null, lastFlow: null, kept: null };
   window.__gdocsFindHelpers = state;   // for debugging from the console
 
   const [AR, AG, AB] = ACTIVE, [IR, IG, IB] = INACTIVE;
@@ -56,7 +57,26 @@
   const scroller  = () => document.querySelector('.kix-appview-editor');
   const iframe    = () => document.querySelector('iframe.docs-texteventtarget-iframe');
   const editor    = () => { const f = iframe(); try { return f && f.contentDocument && f.contentDocument.querySelector('[contenteditable]'); } catch { return null; } };
-  const selText   = () => { const ce = editor(); return ce ? (ce.textContent || '').trim() : ''; };
+  const IS_MAC    = /Mac|iPhone|iPad/.test(navigator.platform);
+  const FIND_MOD  = IS_MAC ? { metaKey: true } : { ctrlKey: true };   // macOS Docs ignores Ctrl+F (measured Nov 2026, Firefox 145)
+  const mirror    = () => { const ce = editor(); return ce ? (ce.textContent || '').trim() : ''; };
+  // Docs on Linux fills the mirror on every selection change; Docs on macOS leaves it empty
+  // until something copies. A synthetic copy event makes Docs write the selection into the
+  // event's clipboardData (and fill the mirror) without touching the system clipboard.
+  const copiedSel = () => {
+    const ce = editor();
+    if (!ce) return '';
+    let text = '';
+    const grab = e => { try { text = e.clipboardData ? e.clipboardData.getData('text/plain') : ''; } catch {} };
+    const w = ce.ownerDocument.defaultView;
+    w.addEventListener('copy', grab);            // bubble phase: runs after Docs' own handler
+    try {
+      dispatch(ce, new ClipboardEvent('copy', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true, composed: true }));
+    } finally { w.removeEventListener('copy', grab); }
+    return text.trim();
+  };
+  // Cheap read for polling; `deep` falls back to the copy trick when the mirror is empty.
+  const selText   = (deep = false) => mirror() || (deep ? copiedSel() : '');
   const usable    = s => !!s && s.length <= MAX_SEL && !/[\r\n\v\f\x85\u2028\u2029]/.test(s);
   const tilesOf   = sc => [...sc.querySelectorAll('canvas.kix-canvas-tile-content')].filter(c => c.width && c.height && c.offsetHeight);   // Docs keeps spare hidden tiles
   const sleep = t => new Promise(r => setTimeout(r, t));
@@ -162,7 +182,7 @@
       if (seen) seen.add(k);
       part.rows = [];
       const ys = cr.height / h;
-      let run = null;
+      let run = null, miss = 0;
       for (let y = 0; y <= h; y++) {
         let n = 0, act = 0;
         if (y < h) {
@@ -175,8 +195,10 @@
             else if (Math.abs(r - AR) <= TOL && Math.abs(g - AG) <= TOL && Math.abs(b - AB) <= TOL) { n++; act++; }
           }
         }
-        if (n >= MIN_PX) { run ??= { y, act: 0 }; run.act += act; }
-        else if (run) { part.rows.push({ y: from + run.y * ys, active: run.act > 0 }); run = null; }
+        // Glyphs drawn over a highlight can hide it on one sample row; only a gap of MAX_MISS+1 rows ends it,
+        // else one match gave two or three ticks (53 ticks for 35 matches, measured Nov 2026, Firefox).
+        if (n >= MIN_PX) { run ??= { y, act: 0 }; run.act += act; miss = 0; }
+        else if (run && (++miss > MAX_MISS || y === h)) { part.rows.push({ y: from + run.y * ys, active: run.act > 0 }); run = null; miss = 0; }
       }
       return part;
     });
@@ -200,123 +222,149 @@
     if (rows.some(r => r.active)) list.forEach(r => { r.active = false; });
     return list.concat(rows).sort((a, b) => a.y - b.y);
   }
-
-  // ---- sweep the whole tab once ------------------------------------------
-  // A still picture of the page, shown while we scroll underneath it.
-  function freeze(sc) {
-    const tiles = tilesOf(sc);
-    if (!tiles.length) return null;
-    const rects = tiles.map(t => t.getBoundingClientRect());
-    const sr = sc.getBoundingClientRect();
-    const height = sc.clientHeight;
-    const dpr = window.devicePixelRatio || 1;
-    const bg = getComputedStyle(sc).backgroundColor;
-    const paper = !bg || bg === 'transparent' || /,\s*0\)$/.test(bg) ? '#fff' : bg;
-    const pages = [...sc.querySelectorAll('.kix-page-paginated')].map(p => p.getBoundingClientRect());
-    const pics = [...sc.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth)
-      .map(i => [i, i.getBoundingClientRect()]).filter(([, r]) => r.bottom > sr.top && r.top < sr.top + height);
-    const shot = (left, width, zIndex) => {
-      const cv = document.createElement('canvas');
-      cv.width = Math.round(width * dpr);
-      cv.height = Math.round(height * dpr);
-      Object.assign(cv.style, {
-        position: 'fixed', left: left + 'px', top: sr.top + 'px',
-        width: width + 'px', height: height + 'px', pointerEvents: 'none', zIndex,
-      });
-      const g = cv.getContext('2d');
-      g.scale(dpr, dpr);
-      g.fillStyle = paper;
-      g.fillRect(0, 0, width, height);
-      g.fillStyle = '#fff';
-      pages.forEach(p => g.fillRect(p.left - left, p.top - sr.top, p.width, p.height));
-      pics.forEach(([img, r]) => { try { g.drawImage(img, r.left - left, r.top - sr.top, r.width, r.height); } catch {} });
-      tiles.forEach((t, i) => g.drawImage(t, rects[i].left - left, rects[i].top - sr.top, rects[i].width, rects[i].height));
-      return [cv, g];
-    };
-    const left = Math.min(...rects.map(r => r.left));
-    // z-index 1000: above Docs' text layer (22), below its find bar (1003)
-    const [page] = shot(left, sr.right - left, 1000);
-    sc.parentElement.appendChild(page);
-
-    const bar = sc.offsetWidth - sc.clientWidth;        // 0 when the scrollbar is the overlay kind
-    const w = Math.max(bar, 14);
-    const [strip, g] = shot(sr.right - w, w, 2147482999);  // just under the tick strip
-    if (bar > 0) {
-      g.fillStyle = '#f1f1f1';
-      g.fillRect(w - bar, 0, bar, height);
-      g.fillStyle = '#c1c1c1';
-      g.fillRect(w - bar + 2, (sc.scrollTop / sc.scrollHeight) * height, bar - 4,
-                 Math.max(20, (height * height) / sc.scrollHeight));
+  // After a hidden-editor sweep its rows are the positions. Rows read off the visible editor
+  // while Docs is still scrolling or repainting can land up to 80 px off (measured Nov 2026,
+  // Firefox), so take only "which match is current" from the visible editor.
+  const ACTIVE_SNAP = 16;
+  function withActive(rows, sc) {
+    const out = rows.map(r => ({ y: r.y, active: false }));
+    for (const a of scan(sc).flatMap(p => p.rows || []).filter(r => r.active)) {
+      let best = null;
+      for (const r of out) if (!best || Math.abs(r.y - a.y) < Math.abs(best.y - a.y)) best = r;
+      if (best && Math.abs(best.y - a.y) <= ACTIVE_SNAP) best.active = true;
+      else out.push({ y: a.y, active: true });
     }
-    document.documentElement.appendChild(strip);
-    // Docs pops up a "17 of 25" page label whenever the document scrolls.
-    const hush = document.createElement('style');
-    hush.textContent = '.kix-scrollbarwidget{visibility:hidden!important}';
-    document.documentElement.appendChild(hush);
-    return { remove() { page.remove(); strip.remove(); hush.remove(); } };
+    return out.sort((a, b) => a.y - b.y);
   }
 
-  // The sweep in progress, so an input event can put the page back at once.
-  let current = null;
-  function abortSweep() {
-    const s = current;
-    if (!s) return;
-    s.aborted = true;
-    s.sc.scrollTop = s.home;
-    s.last = s.sc.scrollTop;
-    s.cover?.remove();
-  }
+  // ---- the shadow editor ----------------------------------------------------
+  // Docs only paints the canvas near the viewport. v0.4 scrolled the visible editor
+  // through the whole tab to read every match, which moved the outline highlight and
+  // flashed the page. Instead, load the same doc once in a hidden, inert iframe (a
+  // second editor session), run Docs' find there and scroll THAT editor. Its rows map
+  // 1:1 onto the visible editor when both scrollers are the same width (measured
+  // Nov 2026, Firefox: 51 of 54 rows exact, 53 within 2 px). Do not scale by the
+  // scrollHeight ratio: the difference is bottom padding.
+  const SHADOW_ID = 'gdocs-find-helpers-shadow';
+  const SHADOW_SETTLE_MS = 600;     // scrollHeight unchanged this long = laid out
+  const SHADOW_LOAD_MS = 30000;
+  const HIDE_FIND = '.appsDocsUiWizFindbarCard{opacity:0!important;transform:translate(-100000px,-100000px)!important;transition:none!important;pointer-events:none!important}';
+  const sh = { fr: null, sc: null, ready: false, url: '', loading: null, lock: Promise.resolve(), token: 0 };
+  state.shadow = sh;
+  const shadowUrl = () => location.href.replace(/#.*/, '');
 
-  // Returns { rows, complete, steps, ms }. Partial rows are returned when stale() stops it.
-  async function sweep(sc, stale, seed = []) {
+  function shadowLoad() {
+    if (sh.loading && sh.url === shadowUrl()) return sh.loading;
+    sh.url = shadowUrl(); sh.ready = false; sh.sc = null;
+    let fr = document.getElementById(SHADOW_ID);
+    if (fr && fr.dataset.url !== sh.url) { fr.remove(); fr = null; }   // you moved to another document tab
+    if (!fr) {
+      fr = document.createElement('iframe');
+      fr.id = SHADOW_ID; fr.dataset.url = sh.url;
+      fr.setAttribute('aria-hidden', 'true'); fr.tabIndex = -1;
+      fr.inert = true;              // without it the iframe's find box takes focus from your editor
+      Object.assign(fr.style, { position: 'fixed', left: '0', top: '0', width: innerWidth + 'px', height: innerHeight + 'px',
+        opacity: '0', pointerEvents: 'none', zIndex: '-1', border: '0' });
+      fr.src = sh.url;
+      document.body.appendChild(fr);
+    }
+    sh.fr = fr;
+    sh.loading = (async () => {
+      const t = performance.now();
+      const D = () => { try { return fr.contentDocument; } catch { return null; } };
+      let sc = null, lastH = -1, since = 0;
+      while (performance.now() - t < SHADOW_LOAD_MS && fr.isConnected) {
+        sc ||= D() && D().querySelector('.kix-appview-editor');
+        if (sc) {
+          const h = sc.scrollHeight;
+          if (h !== lastH) { lastH = h; since = performance.now(); }
+          else if (h > sc.clientHeight && performance.now() - since > SHADOW_SETTLE_MS && tilesOf(sc).length) break;
+        }
+        await sleep(100);
+      }
+      if (!sc || !fr.isConnected) return false;
+      const s = D().createElement('style'); s.textContent = HIDE_FIND; D().documentElement.appendChild(s);
+      sh.sc = sc; sh.ready = true; sh.loadMs = Math.round(performance.now() - t);
+      return true;
+    })();
+    return sh.loading;
+  }
+  // Loaded on the first double-click or find, not at page open: the load blocks the page for
+  // about 3.5 s in bursts (measured Nov 2026, Firefox), which docs you only read should not pay.
+  // That first scan falls back to the painted tiles; every later one reuses this editor.
+  window.addEventListener('resize', () => { if (sh.fr) Object.assign(sh.fr.style, { width: innerWidth + 'px', height: innerHeight + 'px' }); });
+
+  // Every match row of `word` in the whole tab, in the visible editor's scroll coordinates.
+  // Returns null when the shadow editor is not ready (callers fall back to the painted tiles).
+  async function shadowSweep(word, stale) {
+    if (!sh.ready || sh.url !== shadowUrl() || !sh.fr.isConnected) { shadowLoad(); return null; }
+    const my = ++sh.token;
+    const prev = sh.lock; let release; sh.lock = new Promise(r => { release = r; });
+    await prev;                     // one sweep at a time; a newer call makes this one stale
+    const gone = () => my !== sh.token || stale();
     const t0 = performance.now();
-    const s = { sc, home: sc.scrollTop, last: sc.scrollTop, cover: null, aborted: false };
-    current = s;
-    s.cover = freeze(sc);
-    const seen = new Set();
-    let fresh = seed, complete = true, steps = 0, reach = 0, y = 0, retried = false;
-    const go = async top => {
-      // If Docs (new query, next match) or you moved the page meanwhile, end up there instead.
-      if (Math.abs(sc.scrollTop - s.last) > 1) s.home = sc.scrollTop;
-      const to = top ?? s.home;
-      if (Math.abs(sc.scrollTop - to) <= 1) { s.last = sc.scrollTop; return; }   // already there: tiles are painted
-      sc.scrollTop = to;
-      s.last = sc.scrollTop;
-      sc.dispatchEvent(new Event('scroll'));   // Docs moves its tiles right away...
-      await frame(); await frame();            // ...and has repainted them two frames later.
-    };
+    const W = sh.fr.contentWindow, D = sh.fr.contentDocument, sc = sh.sc;
     try {
+      // A copy of this script without the top-window guard would sweep this frame too; park it.
+      if (W.__gdocsFindHelpers) W.__gdocsFindHelpers.flow = { cancelled: true, handover: true, reason: 'shadow' };
+      const card = () => D.querySelector('.appsDocsUiWizFindbarCard');
+      const open = () => !!card() && W.getComputedStyle(card()).visibility === 'visible';
+      const input = () => card() && card().querySelector('input[type="text"], input:not([type])');
+      const counter = () => { const c = D.querySelector('.appsDocsUiWizFindbarFindInputCounter'); return c ? c.textContent : ''; };
+      const fr = () => new Promise(res => { let d = false; const f = () => { if (!d) { d = true; res(); } }; W.requestAnimationFrame(f); setTimeout(f, 150); });
+      if (!open()) {                // stays open between double-clicks, holding the last word
+        const tef = D.querySelector('iframe.docs-texteventtarget-iframe');
+        const ce = tef && tef.contentDocument.querySelector('[contenteditable]');
+        if (!ce) return null;
+        const mac = /Mac/.test(navigator.platform);
+        ce.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'f', code: 'KeyF', keyCode: 70, which: 70,
+          ctrlKey: !mac, metaKey: mac, bubbles: true, cancelable: true, composed: true }));
+        const t = performance.now();
+        while (!open() && performance.now() - t < OPEN_TIMEOUT_MS) { if (gone()) return null; await fr(); }
+        if (!open()) return null;
+      }
+      const inp = input();
+      if (!inp) return null;
+      if (inp.value !== word) {
+        const c0 = counter();
+        Object.getOwnPropertyDescriptor(W.HTMLInputElement.prototype, 'value').set.call(inp, word);
+        inp.dispatchEvent(new W.Event('input', { bubbles: true }));
+        const t = performance.now();
+        while (!(counter() !== c0 && /\d/.test(counter())) && performance.now() - t < OPEN_TIMEOUT_MS) { if (gone()) return null; await fr(); }
+      }
+      if (/^\s*0\b/.test(counter())) return { rows: [], complete: true, steps: 0, ms: Math.round(performance.now() - t0) };
+      // The counter updates before the green is painted: a fresh query read at once misses every
+      // match above the current one (measured Nov 2026, Firefox). Docs scrolls this editor to the
+      // current match, so wait until the green shows there.
+      for (const t = performance.now(); performance.now() - t < OPEN_TIMEOUT_MS; await fr()) {
+        if (gone()) return null;
+        if (scan(sc, new Set()).some(p => p.rows && p.rows.length)) break;
+      }
+      // Read the tab top to bottom. Nothing here is visible, so no cover and no restore.
+      const seen = new Set();
+      let rows = [], steps = 0, reach = 0, y = 0, complete = true;
       for (;;) {
-        if (s.aborted || stale()) { complete = false; break; }
-        await go(y);
-        if (s.aborted || stale()) { complete = false; break; }
+        if (gone()) { complete = false; break; }
+        if (Math.abs(sc.scrollTop - y) > 1) { sc.scrollTop = y; sc.dispatchEvent(new W.Event('scroll')); await fr(); await fr(); }
+        if (gone()) { complete = false; break; }
         const parts = scan(sc, seen).sort((a, b) => a.from - b.from);
-        fresh = merge(fresh, parts);
+        rows = merge(rows, parts);
         steps++;
+        for (const p of parts) if (p.from <= reach + SLACK && p.to > reach) reach = p.to;
         const max = sc.scrollHeight - sc.clientHeight;
-        // Jumped too far and left an unread stretch behind? Go back for it once.
-        const gap = parts.length > 0 && parts[0].from > reach + SLACK;
-        if (gap && !retried) { retried = true; y = Math.min(max, reach); continue; }
-        retried = false;
-        if (!parts.length) reach += sc.clientHeight;
-        for (const p of parts) if (p.to > reach && (gap || p.from <= reach + SLACK)) reach = p.to;
-        if (sc.scrollTop >= max - 1 || reach >= sc.scrollHeight - 1) break;
-        if (performance.now() - t0 > SWEEP_MAX_MS || steps > SWEEP_MAX_STEPS) { complete = false; break; }
-        // Docs paints one tile above the one at the top of the view, so aim one tile past
-        // what is read: the next batch then starts exactly where this one ended.
-        const tileH = parts.length ? parts[0].to - parts[0].from : 0;
+        if (reach >= sc.scrollHeight - 1 || sc.scrollTop >= max - 1) break;
+        if (steps > SWEEP_MAX_STEPS || performance.now() - t0 > SWEEP_MAX_MS) { complete = false; break; }
+        const tileH = parts.length ? parts[0].to - parts[0].from : sc.clientHeight;
         y = Math.min(max, reach + tileH + 1);
       }
+      const ms = Math.round(performance.now() - t0);
+      state.lastSteps = steps; state.lastSweepMs = ms;
+      if (complete) state.sweeps++;
+      // Which match is "current" is the visible editor's business: the caller merges that in.
+      return { rows: rows.map(r => ({ y: r.y, active: false })), complete, steps, ms };
     } finally {
-      if (s.aborted) { sc.scrollTop = s.home; sc.dispatchEvent(new Event('scroll')); }
-      else await go(null);
-      s.cover?.remove();
-      if (current === s) current = null;
+      release();
     }
-    const ms = Math.round(performance.now() - t0);
-    state.lastSteps = steps; state.lastSweepMs = ms;
-    if (complete) state.sweeps++;
-    return { rows: fresh, complete, steps, ms };
   }
 
   // ---- A. double-click a word ---------------------------------------------
@@ -330,6 +378,31 @@
       key(input, 'Escape');
       await waitFor(() => !isOpen(), OPEN_TIMEOUT_MS);
     }
+  }
+
+  // Close the bar a double-click left open (the selection collapsed, or a new double-click).
+  async function release(why) {
+    const k = state.kept;
+    if (!k) return;
+    state.kept = null;
+    state.releasedBy = why;                         // for debugging from the console
+    clearTicks();
+    await closeSafely(findInput() || k.input, false);
+    k.hide.remove();
+    const ce = editor();
+    if (ce && (document.activeElement !== iframe() || ce.ownerDocument.activeElement !== ce)) ce.focus();
+  }
+  // Is the double-clicked word no longer selected (collapsed by a click or a key, or another selection)?
+  // Compare with the word, not with '': on macOS the mirror reads '' until something copies, so there
+  // this must read the selection the deep way (synthetic copy) instead of trusting an empty mirror.
+  const selGone = k => selText(true) !== k.word;
+  // You pressed Ctrl/Cmd+F while the green shows: the bar is already open with the word; show it.
+  function handOver() {
+    const k = state.kept;
+    if (!k) return;
+    state.kept = null;
+    k.hide.remove();
+    state.mode = 'user';
   }
 
   async function runFlow(word, t0) {
@@ -346,7 +419,7 @@
     let opened = false;
     mark('start');
     try {
-      key(ce, 'f', { ctrlKey: true });
+      key(ce, 'f', FIND_MOD);
       opened = true;
       if (!await waitFor(isOpen, OPEN_TIMEOUT_MS, stop)) { f.reason ||= 'bar did not open'; return; }
       mark('opened');
@@ -372,14 +445,23 @@
       mark('firstTicks');
       // No matches, or a short tab that is painted top to bottom already: nothing left to sweep.
       if (/^\s*0\b/.test(f.counter) || coversAll(sc, first)) { f.sweep = { complete: true, steps: 0, ms: 0 }; mark('swept'); return; }
-      const res = await sweep(sc, () => f.cancelled || input.value !== word, state.rows);
-      f.sweep = { complete: res.complete, steps: res.steps, ms: res.ms };
-      if (!f.handover) { setRows(res.rows, 'dbl'); draw(sc); }
+      const res = await shadowSweep(word, () => f.cancelled || input.value !== word);
+      // Not loaded yet: keep the ticks of the tiles already painted.
+      f.sweep = res ? { complete: res.complete, steps: res.steps, ms: res.ms, source: 'shadow' } : { complete: false, source: 'painted' };
+      if (res && !f.handover && !f.cancelled) { setRows(withActive(res.rows, sc), 'dbl'); state.fromShadow = true; draw(sc); }
       mark('swept');
     } finally {
       if (f.handover) {
         hide.remove();
         state.mode = 'user';
+      } else if (!f.cancelled && state.rows.length && isOpen() && input && input.value === word) {
+        // Leave the bar open but hidden, so Docs keeps the green on every match.
+        // release() closes it when the ticks go: the selection collapses or you double-click again.
+        state.kept = { word, input, hide };
+        if (document.activeElement !== iframe() || ce.ownerDocument.activeElement !== ce) ce.focus();
+        if (sc.scrollTop !== before.scroll && !f.userScrolled) sc.scrollTop = before.scroll;
+        f.kept = true;
+        mark('kept');
       } else {
         mark('closing');
         input ||= findInput();
@@ -405,7 +487,6 @@
     if (!f || f.cancelled) return;
     f.cancelled = true; f.reason = why;
     if (why === 'wheel') f.userScrolled = true;
-    abortSweep();
     const input = findInput();
     if (why === 'find') {
       // You pressed Ctrl/Cmd+F yourself: show the bar we already filled, and leave it open.
@@ -425,8 +506,8 @@
 
   function onDblClick(e) {
     if (state.flow || !e.target.closest || !e.target.closest('.kix-appview-editor')) return;
-    if (isOpen()) return;                         // your own find is open; leave it alone
-    const word = selText();
+    if (isOpen() && !state.kept) return;          // your own find is open; leave it alone
+    const word = selText(true);
     if (!usable(word)) return;
     const t0 = performance.now();
     if (pending) pending.cancel('replaced');
@@ -436,8 +517,8 @@
     timer = setTimeout(() => {
       if (pending !== p) return;
       pending = null;
-      if (selText() !== word) return;             // the selection grew (triple-click) or moved
-      runFlow(word, t0).catch(err => console.warn('[gdocs-find-helpers]', err));
+      if (selText(true) !== word) return;         // the selection grew (triple-click) or moved
+      release('dblclick').then(() => runFlow(word, t0)).catch(err => console.warn('[gdocs-find-helpers]', err));
     }, DBL_WAIT_MS);
   }
 
@@ -470,7 +551,8 @@
     if (state.flow || pending) { cancelFlow(isFindKey(e) && state.flow ? 'find' : 'keydown', e); if (!isFindKey(e)) return; }
     if (!isFindKey(e)) return;
     if (state.flow && state.flow.handover) return;  // the bar is already filled with the word
-    const sel = selText();
+    if (state.kept) handOver();
+    const sel = selText(true);
     if (usable(sel)) prefill(sel);
     // Docs opens its own bar; we do not preventDefault.
   }
@@ -482,7 +564,9 @@
   function onWheel() { if (state.flow || pending) cancelFlow('wheel'); }
   function onSelChange() {
     // A plain click collapses the selection: the mirror goes empty right after mouseup.
-    if (state.mode === 'dbl' && !state.flow && !pending && selText() === '') clearTicks();
+    if (state.mode !== 'dbl' || state.flow || pending) return;
+    if (state.kept) { if (selGone(state.kept)) release('selectionchange'); }
+    else if (selText() === '') clearTicks();
   }
 
   window.addEventListener('keydown', onKeyDown, true);
@@ -512,6 +596,11 @@
     const sc = scroller();
     const open = isOpen();
     const inp = findInput();
+    if (state.kept) {                               // our own hidden bar, not a find you opened
+      if (!open) { const k = state.kept; state.kept = null; state.releasedBy = 'docs closed'; k.hide.remove(); clearTicks(); }   // Docs closed it
+      else if (!pending && selGone(state.kept)) release('poll');
+      return;
+    }
     if (state.mode === 'dbl') {
       if (open) clearTicks();                       // you opened find yourself
       else { if (!pending && selText() === '') clearTicks(); return; }
@@ -537,11 +626,12 @@
         if (total === '0') {
           setRows([], 'user'); sweptKey = docKey; sweptHeight = sc.scrollHeight;
         } else if (Date.now() - pendingAt >= SETTLE_MS && !document.hidden) {
-          const res = await sweep(sc, () => { const i = findInput(); return !isOpen() || !i || i.value !== q || !!state.flow; });
-          if (res.complete && isOpen()) { setRows(res.rows, 'user'); sweptKey = docKey; sweptHeight = sc.scrollHeight; }
+          const res = await shadowSweep(q, () => { const i = findInput(); return !isOpen() || !i || i.value !== q || !!state.flow; });
+          if (res && res.complete && isOpen()) { setRows(withActive(res.rows, sc), 'user'); state.fromShadow = true; sweptKey = docKey; sweptHeight = sc.scrollHeight; }
+          else if (isOpen()) { setRows(merge(state.rows, scan(sc)), 'user'); state.fromShadow = false; }   // shadow not ready: painted tiles only
         } else {
           await frame(); await frame();
-          setRows(merge([], scan(sc)), 'user');      // nearby ticks right away, the rest after the sweep
+          setRows(merge([], scan(sc)), 'user'); state.fromShadow = false;   // nearby ticks right away, the rest after the sweep
         }
         if (!isOpen()) clearTicks();
         draw(sc);
@@ -552,7 +642,7 @@
       if (k !== localKey) {
         localKey = k;
         await frame(); await frame();
-        if (isOpen()) setRows(merge(state.rows, scan(sc)), 'user');
+        if (isOpen()) setRows(state.fromShadow ? withActive(state.rows, sc) : merge(state.rows, scan(sc)), 'user');
         draw(sc);
       }
     } finally {
